@@ -885,9 +885,19 @@ QUALIFICATIONS & SKILLS:
          * Standard native fetch function for Gemini generation.
          * Direct REST API call, 'x-goog-api-key' header, and 2-second auto-retry on 503.
          */
-        async function fetchCoverLetter(resume, jd) {
-          const prompt = `You are a world-class remote career strategist, ATS technical reviewer... (بقیه متن پرامپت دقیقاً مثل قبل، من اینجا کوتاه نوشتم تا شلوغ نشود. همان پرامپت قبلی خودت را اینجا نگه دار)
-          
+        async function fetchCoverLetter(resume, jd, retries = 2) {
+          const prompt = `You are a world-class remote career strategist, ATS technical reviewer, and hiring manager for premier remote companies.
+
+Your task is to analyze the candidate's Resume/Skills and the target Job Description (JD).
+Generate:
+1. A compelling, exact 3-paragraph tailored Cover Letter designed specifically for a remote role.
+   - Paragraph 1 (The Hook): Demonstrate authentic excitement for the company and mission, and establish why the candidate is immediately suited for this remote position.
+   - Paragraph 2 (The Proof of Impact & Async Match): Connect 2-3 specific skills and tangible accomplishments from the resume directly to the JD's requirements, highlighting autonomous execution, async communication, and technical depth.
+   - Paragraph 3 (The Close): A confident, high-conversion closing statement expressing eagerness for an interview, time zone flexibility, and next steps.
+2. A list of critical "atsMissingKeywords": Technical, tool, or domain keywords present in the JD that are MISSING or weak in the candidate's resume.
+3. A list of "matchedKeywords": Key strengths and requirements from the JD that the candidate possesses.
+4. An estimated "matchScore": An integer between 50 and 96 representing ATS suitability.
+
 Candidate Resume / Skills:
 """${resume}"""
 
@@ -911,40 +921,53 @@ Format your output strictly as a JSON object matching this schema:
             },
           };
 
-          // حالا درخواست را به فایل بک‌اند خودمان می‌فرستیم!
-          let response = await fetch('/api/generate', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload)
-          });
-
-          if (!response.ok) {
-            let errorDetails = await response.text();
-            throw new Error(`Server Error: ${errorDetails}`);
-          }
-
-          const data = await response.json();
-          const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (!candidateText) throw new Error('No generated output returned.');
-
-          let parsedResult;
           try {
-            const sanitized = candidateText.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
-            parsedResult = JSON.parse(sanitized);
-          } catch (jsonErr) {
-            parsedResult = {
-              coverLetter: candidateText,
-              atsMissingKeywords: ['Error parsing result'],
-              matchedKeywords: [],
-              matchScore: 0,
-            };
+            let response = await fetch('/api/generate', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+              let errorDetails = await response.text();
+              // Check if it's a 503 error from Gemini
+              if ((response.status === 503 || errorDetails.includes("high demand")) && retries > 0) {
+                  console.warn(`Server busy. Retrying... (${retries} attempts left)`);
+                  await new Promise(resolve => setTimeout(resolve, 2000));
+                  return fetchCoverLetter(resume, jd, retries - 1);
+              }
+              throw new Error(`Server Error: ${errorDetails}`);
+            }
+
+            const data = await response.json();
+            const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!candidateText) throw new Error('No generated output returned.');
+
+            let parsedResult;
+            try {
+              const sanitized = candidateText.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+              parsedResult = JSON.parse(sanitized);
+            } catch (jsonErr) {
+              parsedResult = {
+                coverLetter: candidateText,
+                atsMissingKeywords: ['Error parsing result'],
+                matchedKeywords: [],
+                matchScore: 0,
+              };
+            }
+
+            return parsedResult;
+            
+          } catch (error) {
+              if (retries > 0 && error.message.includes("high demand")) {
+                  await new Promise(resolve => setTimeout(resolve, 2000));
+                  return fetchCoverLetter(resume, jd, retries - 1);
+              }
+              throw error;
           }
-
-          return parsedResult;
         }
-
         // --- RENDER RESULTS IN UI ---
         function renderResults(result) {
           // 1. Cover letter
